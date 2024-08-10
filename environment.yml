@@ -1,9 +1,11 @@
 name: lara
 channels:
   - pytorch
+  - nvidia/label/cuda-12.1.0
   - nvidia
   - defaults
 dependencies:
+  - cuda
   - pip=24.0
   - python=3.9.19
   - zlib=1.2.13
