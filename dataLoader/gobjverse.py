@@ -22,8 +22,8 @@ class gobjverse(torch.utils.data.Dataset):
         self.split = cfg.split
         self.img_size = np.array(cfg.img_size)
 
-        self.metas = h5py.File(self.data_root, 'r')
-        scenes_name = np.array(sorted(self.metas.keys()))
+        self.metas = h5py.File(self.data_root, 'r') # ..../gobjverse.h5
+        scenes_name = np.array(sorted(self.metas.keys()))  
         
         if 'splits' in scenes_name:
             self.scenes_name = self.metas['splits']['test'][:].astype(str) #self.metas['splits'][self.split]
@@ -32,29 +32,56 @@ class gobjverse(torch.utils.data.Dataset):
             i_train = np.array([i for i in np.arange(len(scenes_name)) if
                             (i not in i_test)])[:cfg.n_scenes]
             self.scenes_name = scenes_name[i_train] if self.split=='train' else scenes_name[i_test]
-            
+            # if train : scene_name's 90% is assinged to self.scene_name
         self.b2c = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=np.float32)
-        self.n_group = cfg.n_group
+        # self.b2c : dont used
+        self.n_group = cfg.n_group # in base.yaml, n_group: 4
         
 
     def __getitem__(self, index):
 
-        scene_name = self.scenes_name[index]
+        scene_name = self.scenes_name[index] # 6 digit number e.g. '100002'
         scene_info = self.metas[scene_name]
+        # keys : 'bbox', 'c2w_{0~37}', 'fov_{0~37}', 'groups', 'image_{0~37}', 'normal_{0~37}'
+        # 'image_{}' : (512, 512, 4)
+        # 'normal_{}' : (512, 512, 3)
+        # "bbox" : (2, 3) - min, max
 
         if self.split=='train' and self.n_group > 1:
             src_view_id = [random.choices(scene_info['groups'][f'groups_{self.n_group}_{i}'])[0] for i in torch.randperm(self.n_group).tolist()]
+            # e.g. if n_group = 4, torch.randperm(self.n_group).tolist()  : [2, 0, 3, 1]
+                # e.g.  scene_info['groups'][f'groups_{self.n_group}_0'].shape (9,)
+                # e.g.  scene_info['groups'][f'groups_{self.n_group}_1'].shape (10,)
+                # e.g.  scene_info['groups'][f'groups_{self.n_group}_2'].shape (11,)
+                # e.g.  scene_info['groups'][f'groups_{self.n_group}_3'].shape (8,)
+            #src_view_id : select one element from each group 
+                #  if self.n_group = 4, src_view_id = len 4 int list
             view_id = src_view_id + [random.choices(scene_info['groups'][f'groups_{self.n_group}_{i}'])[0] for i in torch.randperm(self.n_group).tolist()]
+            # if n_group =4, view_id have 8 elements
         elif self.n_group == 1:
             src_view_id = [scene_info['groups'][f'groups_4_{i}'][0] for i in range(1)]
+            # scene_info['groups'][f'groups_4_0'][0] : array([16, 17, 18, 19, 20, 21, 33, 34, 35], dtype=uint8)
+            # src_view_id = [16]
             view_id = src_view_id + [scene_info['groups'][f'groups_4_{i}'][-1] for i in range(4)]
+            # 5 elements in view_id
+            # [group_4_0[0], group_4_0[-1], group_4_1[-1], group_4_2[-1], group_4_3[-1]]
         else:
             src_view_id = [scene_info['groups'][f'groups_{self.n_group}_{i}'][0] for i in range(self.n_group)]
             view_id = src_view_id + [scene_info['groups'][f'groups_4_{i}'][-1] for i in range(4)]
         
-            
         tar_img, bg_colors, tar_nrms, tar_msks, tar_c2ws, tar_w2cs, tar_ixts = self.read_views(scene_info, view_id, scene_name)
 
+        """
+        tar_img : (V, H, W, 3)
+        bg_colors : (V, 3)
+        tar_nrms : (V, H, W, 3)  - range (-1, 1) // Note that normal is not normalized as image form (0,1)
+        tar_msks : (V, H, W) - binary mask // if alpha channel is positive, mask is 1
+        tar_c2ws : (V, 4, 4) - camera to world matrix
+        tar_w2cs : (V, 4, 4) - world to camera matrix
+        tar_ixts : (V, 3, 3) - intrinsic matrix 
+            // Note that intrinsic matrix is not normalized with focal length like instantmesh
+        """
+        
         # align cameras using first view
         # no inverse operation 
         r = np.linalg.norm(tar_c2ws[0,:3,3])
@@ -91,7 +118,7 @@ class gobjverse(torch.utils.data.Dataset):
         rays = build_rays(tar_c2ws, tar_ixts.copy(), H, W, 1.0)
         ret.update({f'tar_rays': rays})
         rays_down = build_rays(tar_c2ws, tar_ixts.copy(), H, W, 1.0/16)
-        ret.update({f'tar_rays_down': rays_down})
+        ret.update({f'tar_rays_down': rays_down}) 
         return ret
     
     def read_views(self, scene, src_views, scene_name):
@@ -151,3 +178,11 @@ def get_K_from_params(params):
     K[2][2] = 1.
     return K
 
+
+
+if __name__ =="__main__":
+    from omegaconf import OmegaConf 
+    cfg = OmegaConf.load('configs/base.yaml')
+    dataset  = gobjverse(cfg.test_dataset)
+    dataset[0]
+    breakpoint()
