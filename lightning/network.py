@@ -83,21 +83,21 @@ class GroupAttBlock(L.LightningModule):
         # cond: [B, L_cond, D_cond]
 
         B,C,D,H,W = x.shape
-
+        breakpoint()
         # Unfold the tensor into patches
-        patches = x.unfold(2, block_size, block_size).unfold(3, block_size, block_size).unfold(4, block_size, block_size)
-        patches = patches.reshape(B, C, -1, block_size**3)
-        patches = torch.einsum('bcgl->bglc',patches).reshape(B*group_axis**3, block_size**3,C)
+        patches = x.unfold(2, block_size, block_size).unfold(3, block_size, block_size).unfold(4, block_size, block_size) # (B, 256, 32, 32, 32) -> (B, 256, 16, 16, 16, 2, 2, 2)
+        patches = patches.reshape(B, C, -1, block_size**3) # (B, 256, 16, 16, 16, 2, 2, 2) -> (B, 256, 4096, 8)
+        patches = torch.einsum('bcgl->bglc',patches).reshape(B*group_axis**3, block_size**3,C) # (B, 256, 4096, 8) -> (B*4096, 256, 8)
      
         # cross attention
-        patches = patches + self.cross_attn(self.norm1(patches), cond, cond, need_weights=False)[0]
-        patches = patches + self.mlp(self.norm2(patches))
+        patches = patches + self.cross_attn(self.norm1(patches), cond, cond, need_weights=False)[0] # (B*4096, 256, 8)
+        patches = patches + self.mlp(self.norm2(patches)) # (B*4096, 256, 8)
 
         # 3D CNN
-        patches = self.norm3(patches)
-        patches = patches.view(B, group_axis,group_axis,group_axis,block_size,block_size,block_size,C) 
-        patches = torch.einsum('bdhwzyxc->bcdzhywx',patches).reshape(x.shape)
-        patches = patches + self.cnn(patches)
+        patches = self.norm3(patches) # (B*4096, 256, 8)
+        patches = patches.view(B, group_axis,group_axis,group_axis,block_size,block_size,block_size,C) # (B*4096, 256, 8) -> (B, 16, 16, 16, 2, 2, 2, 256)
+        patches = torch.einsum('bdhwzyxc->bcdzhywx',patches).reshape(x.shape) # (B, 16, 16, 16, 2, 2, 2, 256) -> (B, 256, 16, 2, 16, 2, 16, 2) -> (B, 256, 32, 32, 32)
+        patches = patches + self.cnn(patches) # (B, 256, 32, 32, 32)
 
         return patches
     
@@ -136,11 +136,11 @@ class VolTransformer(L.LightningModule):
         self.deconv = nn.ConvTranspose3d(embed_dim, out_dim, kernel_size=2, stride=2, padding=0)
 
     def forward(self, image_feats):
-        # image_feats: [B, N_views, C, DHW]
+        # image_feats: [B, N_views, C, DHW] ; feature_volume
         # camera_embeddings: [N, D_mod]
         
         B,V,C,D,H,W = image_feats.shape
-        
+        breakpoint()
         volume_feats = []
         for n_group in self.n_groups:
             block_size = D//n_group
@@ -148,18 +148,21 @@ class VolTransformer(L.LightningModule):
             blocks = blocks.contiguous().view(B,V,C,n_group**3,block_size**3)
             blocks = torch.einsum('bvcgl->bgvlc',blocks).reshape(B*n_group**3,block_size**3*V,C)
             volume_feats.append(blocks)
-
-        x = self.pos_embed.repeat(B, 1,1,1,1)  # [N, G, L, D]
+        breakpoint()
+        x = self.pos_embed.repeat(B, 1,1,1,1)  # [N, G, L, D]   
+        # self.pos_embed : (1, embed_dim, vol_embedding_reso,vol_embedding_reso,vol_embedding_reso)
 
         for i, layer in enumerate(self.layers):
             group_idx = i%len(self.block_size)
             x = layer(x, volume_feats[group_idx], self.n_groups[group_idx], self.block_size[group_idx])
-
+        breakpoint()
         x = self.norm(torch.einsum('bcdhw->bdhwc',x))
         x = torch.einsum('bdhwc->bcdhw',x)
 
         # separate each plane and apply deconv
         x_up = self.deconv(x)  # [3*N, D', H', W']
+        # x.shape    : (B, 256, 32, 32, 32)
+        # x_up.shape : (B,64, 64, 64, 80)
         x_up = torch.einsum('bcdhw->bdhwc',x_up).contiguous()
         return x_up
 
@@ -360,21 +363,48 @@ class Network(L.LightningModule):
         point_img,_ = projection(self.volume_grid, src_w2cs, src_ixts) 
         point_img = (point_img+ 0.5)/img_wh*2 - 1.0
         
-        # viewing direction
-        rays = batch['tar_rays_down'][:,:n_views_sel]
-        feats_dir = self.ray_to_plucker(rays).reshape(-1,*rays.shape[2:])
+
+
+
+        # #####################
+        # # viewing direction
+        # rays = batch['tar_rays_down'][:,:n_views_sel] # [B, n_views_sel, 32, 32, 6]
+        # feats_dir = self.ray_to_plucker(rays).reshape(-1,*rays.shape[2:])
+        # feats_dir = torch.cat((rsh_cart_3(feats_dir[...,:3]),rsh_cart_3(feats_dir[...,3:6])),dim=-1)
+
+        # # [B, 32, 32, 32]
+        # # query features
+        # img_feats =  torch.einsum('bchw->bhwc',img_feats)
+        # img_feats = self.dir_norm(img_feats, feats_dir)
+        # img_feats = torch.einsum('bhwc->bchw',img_feats)
+
+        # # [B, 768, 32, 32]
+
+
+        # n_channel = img_feats.shape[1]
+        # feats_vol = F.grid_sample(img_feats.float(), point_img.unsqueeze(1), align_corners=False).to(img_feats)
+        # feats_vol = feats_vol.view(-1,n_views_sel,n_channel,self.feat_vol_reso,self.feat_vol_reso,self.feat_vol_reso)
+        # #####################
+        rays_o = batch['tar_c2w'][:,:n_views_sel, :3, 3].reshape(-1, 3).unsqueeze(1).repeat(1, self.feat_vol_reso**3, 1)
+        n_views = src_w2cs.shape[0]
+        ray_d = self.volume_grid.reshape(1, -1, 3).repeat(n_views, 1, 1) - rays_o
+        rays = torch.cat((rays_o, ray_d), axis=-1)
+        # breakpoint()
+        feats_dir  =  self.ray_to_plucker(rays)
         feats_dir = torch.cat((rsh_cart_3(feats_dir[...,:3]),rsh_cart_3(feats_dir[...,3:6])),dim=-1)
 
-        # query features
-        img_feats =  torch.einsum('bchw->bhwc',img_feats)
-        img_feats = self.dir_norm(img_feats, feats_dir)
-        img_feats = torch.einsum('bhwc->bchw',img_feats)
 
         n_channel = img_feats.shape[1]
-        feats_vol = F.grid_sample(img_feats.float(), point_img.unsqueeze(1), align_corners=False).to(img_feats)
-
-        # img features
+        feats_vol = F.grid_sample(img_feats.float(), point_img.unsqueeze(1), align_corners=False).to(img_feats) # (B*n_views_sel, C, 1,  G*G*G)
+        feats_vol = torch.einsum('bcp->bpc' , feats_vol.squeeze(2))
+        
+        feats_vol = self.dir_norm(feats_vol, feats_dir)
+        feats_vol = torch.einsum('bpc->bcp' , feats_vol).unsqueeze(1)
         feats_vol = feats_vol.view(-1,n_views_sel,n_channel,self.feat_vol_reso,self.feat_vol_reso,self.feat_vol_reso)
+
+
+        
+        
 
         return feats_vol
     
