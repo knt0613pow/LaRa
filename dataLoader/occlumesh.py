@@ -8,11 +8,18 @@ import os
 import h5py
 
 def fov_to_ixt(fov, reso):
+    """
+    fov : radian
+    reso : np.array([W, H])
+    output : np.array([3,3])
+    
+    """
     ixt = np.eye(3, dtype=np.float32)
     ixt[0][2], ixt[1][2] = reso[0]/2, reso[1]/2
     focal = .5 * reso / np.tan(.5 * fov)
     ixt[[0,1],[0,1]] = focal
     return ixt
+
 
 class Occlumesh(torch.utils.data.Dataset):
     def __init__(self, cfg):
@@ -35,7 +42,7 @@ class Occlumesh(torch.utils.data.Dataset):
                             (i not in i_test)])[:cfg.n_scenes]
             self.scenes_name = scenes_name[i_train] if self.split=='train' else scenes_name[i_test]
             
-        self.b2c = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=np.float32)
+        # self.b2c = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]], dtype=np.float32)
         self.n_group = cfg.n_group
         
 
